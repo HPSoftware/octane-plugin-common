@@ -13,31 +13,46 @@
 package com.hpe.adm.octane.ideplugins.services.connection;
 
 import com.google.api.client.http.*;
-import com.google.api.client.http.javanet.NetHttpTransport;
 import com.hpe.adm.nga.sdk.authentication.Authentication;
 import com.hpe.adm.nga.sdk.exception.OctaneException;
 import com.hpe.adm.nga.sdk.exception.OctanePartialException;
-import com.hpe.adm.nga.sdk.model.*;
+import com.hpe.adm.nga.sdk.model.EntityModel;
+import com.hpe.adm.nga.sdk.model.ErrorModel;
+import com.hpe.adm.nga.sdk.model.LongFieldModel;
+import com.hpe.adm.nga.sdk.model.ModelParser;
 import com.hpe.adm.nga.sdk.network.OctaneHttpClient;
 import com.hpe.adm.nga.sdk.network.OctaneHttpRequest;
 import com.hpe.adm.nga.sdk.network.OctaneHttpResponse;
 import com.hpe.adm.octane.ideplugins.services.connection.granttoken.*;
 import com.hpe.adm.octane.ideplugins.services.exception.ServiceRuntimeException;
 import com.hpe.adm.octane.ideplugins.services.util.ClientType;
+import org.apache.http.Consts;
+import org.apache.http.client.CookieStore;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.ContentType;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.client.BasicCookieStore;
+import org.apache.http.impl.client.HttpClientBuilder;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.net.*;
+import java.net.HttpCookie;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.URI;
+import java.nio.charset.Charset;
 import java.util.*;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-public class IdePluginsOctaneHttpClient implements OctaneHttpClient {
+public class IdePluginsOctaneHttpClient2 implements OctaneHttpClient {
 
-    private static final Logger logger = LoggerFactory.getLogger(IdePluginsOctaneHttpClient.class.getName());
+    private static final Logger logger = LoggerFactory.getLogger(IdePluginsOctaneHttpClient2.class.getName());
 
     private static final String LOGGER_REQUEST_FORMAT = "Request: {} - {} - {}";
     private static final String LOGGER_RESPONSE_FORMAT = "Response: {} - {} - {}";
@@ -56,25 +71,31 @@ public class IdePluginsOctaneHttpClient implements OctaneHttpClient {
     private static final int HTTP_REQUEST_RETRY_COUNT = 1;
 
     private final String urlDomain;
-    private HttpRequestFactory requestFactory;
     private String octaneUserValue;
     private Authentication lastUsedAuthentication;
-    private final Map<OctaneHttpRequest, OctaneHttpResponse> cachedRequestToResponse = new HashMap<>();
-    private final Map<OctaneHttpRequest, String> requestToEtagMap = new HashMap<>();
+
+    private HttpRequestFactory requestFactory;
 
     private long pollingTimeoutMillis = 1000 * 60 * 2;
+
     private String sessionCookieName = DEFAULT_OCTANE_SESSION_COOKIE_NAME;
     private String lwssoValue = "";
     private final Lock authenticationLock = new ReentrantLock(true);
-    private HttpRequestInitializer requestInitializer;
+
 
     private TokenPollingStartedHandler tokenPollingStartedHandler;
     private TokenPollingCompleteHandler tokenPollingCompleteHandler;
     private TokenPollingInProgressHandler tokenPollingInProgressHandler;
 
-    public IdePluginsOctaneHttpClient(String urlDomain, ClientType clientType) {
+    CookieStore cookieStore;
+    private HttpClient httpClient;
+
+    public IdePluginsOctaneHttpClient2(String urlDomain, ClientType clientType) {
         this.urlDomain = urlDomain;
 
+
+
+        /*
         requestInitializer = request -> {
             request.setResponseInterceptor(response -> {
                 // retrieve new LWSSO in response if any
@@ -103,12 +124,17 @@ public class IdePluginsOctaneHttpClient implements OctaneHttpClient {
             }
             request.setReadTimeout(60000);
         };
+         */
+
+        cookieStore = new BasicCookieStore();
+        httpClient = HttpClientBuilder
+                .create()
+                .setDefaultCookieStore(cookieStore)
+                .useSystemProperties()
+                .build();
 
         logProxySystemProperties();
         logSystemProxyForUrlDomain(urlDomain);
-
-        HttpTransport HTTP_TRANSPORT = new NetHttpTransport();
-        requestFactory = HTTP_TRANSPORT.createRequestFactory(requestInitializer);
     }
 
     @Override
@@ -130,15 +156,21 @@ public class IdePluginsOctaneHttpClient implements OctaneHttpClient {
     private boolean octaneAuthenticate(Authentication authentication) {
 
         clearSessionFields();
+        cookieStore.clear();
 
         try {
-            final ByteArrayContent content = ByteArrayContent.fromString("application/json", authentication.getAuthenticationString());
-            HttpRequest httpRequest = requestFactory.buildPostRequest(new GenericUrl(urlDomain + OAUTH_AUTH_URL), content);
-            HttpResponse response = executeRequest(httpRequest);
+            HttpPost request = new HttpPost(urlDomain + OAUTH_AUTH_URL);
+
+            StringEntity entity = new StringEntity(authentication.getAuthenticationString(), ContentType.create("application/json", Consts.UTF_8));
+            request.setEntity(entity);
+
+            org.apache.http.HttpResponse response = httpClient.execute(request);
             sessionCookieName = DEFAULT_OCTANE_SESSION_COOKIE_NAME;
-            return response.isSuccessStatusCode();
+
+            return response.getStatusLine().getStatusCode() == 200;
         } catch (RuntimeException e) {
             lastUsedAuthentication = null; //not reusable
+
             throw e;
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -260,53 +292,54 @@ public class IdePluginsOctaneHttpClient implements OctaneHttpClient {
      */
     protected HttpRequest convertOctaneRequestToGoogleHttpRequest(OctaneHttpRequest octaneHttpRequest) {
 
-        final HttpRequest httpRequest;
-
-        try {
-            switch (octaneHttpRequest.getOctaneRequestMethod()) {
-                case GET: {
-                    GenericUrl domain = new GenericUrl(octaneHttpRequest.getRequestUrl());
-                    httpRequest = requestFactory.buildGetRequest(domain);
-                    httpRequest.getHeaders().setAccept(((OctaneHttpRequest.GetOctaneHttpRequest) octaneHttpRequest).getAcceptType());
-                    final String eTagHeader = requestToEtagMap.get(octaneHttpRequest);
-                    if (eTagHeader != null) {
-                        httpRequest.getHeaders().setIfNoneMatch(eTagHeader);
-                    }
-                    break;
-                }
-                case POST: {
-                    OctaneHttpRequest.PostOctaneHttpRequest postOctaneHttpRequest = (OctaneHttpRequest.PostOctaneHttpRequest) octaneHttpRequest;
-                    GenericUrl domain = new GenericUrl(octaneHttpRequest.getRequestUrl());
-                    httpRequest = requestFactory.buildPostRequest(domain, ByteArrayContent.fromString(null, postOctaneHttpRequest.getContent()));
-                    httpRequest.getHeaders().setAccept(postOctaneHttpRequest.getAcceptType());
-                    httpRequest.getHeaders().setContentType(postOctaneHttpRequest.getContentType());
-                    break;
-                }
-                case POST_BINARY: {
-                    httpRequest = buildBinaryPostRequest((OctaneHttpRequest.PostBinaryOctaneHttpRequest) octaneHttpRequest);
-                    break;
-                }
-                case PUT: {
-                    OctaneHttpRequest.PutOctaneHttpRequest putHttpOctaneHttpRequest = (OctaneHttpRequest.PutOctaneHttpRequest) octaneHttpRequest;
-                    GenericUrl domain = new GenericUrl(octaneHttpRequest.getRequestUrl());
-                    httpRequest = requestFactory.buildPutRequest(domain, ByteArrayContent.fromString(null, putHttpOctaneHttpRequest.getContent()));
-                    httpRequest.getHeaders().setAccept(putHttpOctaneHttpRequest.getAcceptType());
-                    httpRequest.getHeaders().setContentType(putHttpOctaneHttpRequest.getContentType());
-                    break;
-                }
-                case DELETE: {
-                    GenericUrl domain = new GenericUrl(octaneHttpRequest.getRequestUrl());
-                    httpRequest = requestFactory.buildDeleteRequest(domain);
-                    break;
-                }
-                default: {
-                    throw new IllegalArgumentException("Request method not known!");
-                }
-            }
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
-        return httpRequest;
+//        final HttpRequest httpRequest;
+//
+//        try {
+//            switch (octaneHttpRequest.getOctaneRequestMethod()) {
+//                case GET: {
+//                    GenericUrl domain = new GenericUrl(octaneHttpRequest.getRequestUrl());
+//                    httpRequest = requestFactory.buildGetRequest(domain);
+//                    httpRequest.getHeaders().setAccept(((OctaneHttpRequest.GetOctaneHttpRequest) octaneHttpRequest).getAcceptType());
+//                    final String eTagHeader = requestToEtagMap.get(octaneHttpRequest);
+//                    if (eTagHeader != null) {
+//                        httpRequest.getHeaders().setIfNoneMatch(eTagHeader);
+//                    }
+//                    break;
+//                }
+//                case POST: {
+//                    OctaneHttpRequest.PostOctaneHttpRequest postOctaneHttpRequest = (OctaneHttpRequest.PostOctaneHttpRequest) octaneHttpRequest;
+//                    GenericUrl domain = new GenericUrl(octaneHttpRequest.getRequestUrl());
+//                    httpRequest = requestFactory.buildPostRequest(domain, ByteArrayContent.fromString(null, postOctaneHttpRequest.getContent()));
+//                    httpRequest.getHeaders().setAccept(postOctaneHttpRequest.getAcceptType());
+//                    httpRequest.getHeaders().setContentType(postOctaneHttpRequest.getContentType());
+//                    break;
+//                }
+//                case POST_BINARY: {
+//                    httpRequest = buildBinaryPostRequest((OctaneHttpRequest.PostBinaryOctaneHttpRequest) octaneHttpRequest);
+//                    break;
+//                }
+//                case PUT: {
+//                    OctaneHttpRequest.PutOctaneHttpRequest putHttpOctaneHttpRequest = (OctaneHttpRequest.PutOctaneHttpRequest) octaneHttpRequest;
+//                    GenericUrl domain = new GenericUrl(octaneHttpRequest.getRequestUrl());
+//                    httpRequest = requestFactory.buildPutRequest(domain, ByteArrayContent.fromString(null, putHttpOctaneHttpRequest.getContent()));
+//                    httpRequest.getHeaders().setAccept(putHttpOctaneHttpRequest.getAcceptType());
+//                    httpRequest.getHeaders().setContentType(putHttpOctaneHttpRequest.getContentType());
+//                    break;
+//                }
+//                case DELETE: {
+//                    GenericUrl domain = new GenericUrl(octaneHttpRequest.getRequestUrl());
+//                    httpRequest = requestFactory.buildDeleteRequest(domain);
+//                    break;
+//                }
+//                default: {
+//                    throw new IllegalArgumentException("Request method not known!");
+//                }
+//            }
+//        } catch (IOException e) {
+//            throw new RuntimeException(e);
+//        }
+//        return httpRequest;
+        return null;
     }
 
     /**
@@ -341,58 +374,60 @@ public class IdePluginsOctaneHttpClient implements OctaneHttpClient {
      */
     private OctaneHttpResponse execute(OctaneHttpRequest octaneHttpRequest, int retryCount) {
 
-        final HttpRequest httpRequest = convertOctaneRequestToGoogleHttpRequest(octaneHttpRequest);
-        final HttpResponse httpResponse;
+        return new OctaneHttpResponse(200, new ByteArrayInputStream(new byte[]{}, 0, 0), Charset.defaultCharset());
 
-        try {
-            httpResponse = executeRequest(httpRequest);
-
-            final OctaneHttpResponse octaneHttpResponse = convertHttpResponseToOctaneHttpResponse(httpResponse);
-            final String eTag = httpResponse.getHeaders().getETag();
-            if (eTag != null) {
-                requestToEtagMap.put(octaneHttpRequest, eTag);
-                cachedRequestToResponse.put(octaneHttpRequest, octaneHttpResponse);
-            }
-            return octaneHttpResponse;
-
-        } catch (RuntimeException exception) {
-
-            //Return cached response
-            if (exception.getCause() instanceof HttpResponseException) {
-                HttpResponseException httpResponseException = (HttpResponseException) exception.getCause();
-                final int statusCode = httpResponseException.getStatusCode();
-                if (statusCode == HttpStatusCodes.STATUS_CODE_NOT_MODIFIED) {
-                    return cachedRequestToResponse.get(octaneHttpRequest);
-                }
-            }
-
-            //Handle session timeout exception
-            if (retryCount > 0 && exception instanceof OctaneException) {
-                OctaneException octaneException = (OctaneException) exception;
-                StringFieldModel errorCodeFieldModel = (StringFieldModel) octaneException.getError().getValue("errorCode");
-                LongFieldModel httpStatusCode = (LongFieldModel) octaneException.getError().getValue("http_status_code");
-
-                //Handle session timeout
-                if (errorCodeFieldModel != null && httpStatusCode.getValue() == 401 &&
-                        (ERROR_CODE_TOKEN_EXPIRED.equals(errorCodeFieldModel.getValue()) || ERROR_CODE_GLOBAL_TOKEN_EXPIRED.equals(errorCodeFieldModel.getValue())) &&
-                        lastUsedAuthentication != null) {
-
-                    logger.debug("Auth token expired, trying to re-authenticate");
-                    try {
-                        if (lastUsedAuthentication instanceof GrantTokenAuthentication) {
-                            lwssoValue = ""; //clear it to force re-auth
-                        }
-                        authenticate(lastUsedAuthentication);
-                    } catch (OctaneException ex) {
-                        logger.debug("Exception while retrying authentication: {}", ex.getMessage());
-                    }
-                    logger.debug("Retrying request, retries left: {}", retryCount);
-                    return execute(octaneHttpRequest, --retryCount);
-                }
-            }
-
-            throw exception;
-        }
+//        final HttpRequest httpRequest = convertOctaneRequestToGoogleHttpRequest(octaneHttpRequest);
+//        final HttpResponse httpResponse;
+//
+//        try {
+//            httpResponse = executeRequest(httpRequest);
+//
+//            final OctaneHttpResponse octaneHttpResponse = convertHttpResponseToOctaneHttpResponse(httpResponse);
+//            final String eTag = httpResponse.getHeaders().getETag();
+//            if (eTag != null) {
+//                requestToEtagMap.put(octaneHttpRequest, eTag);
+//                cachedRequestToResponse.put(octaneHttpRequest, octaneHttpResponse);
+//            }
+//            return octaneHttpResponse;
+//
+//        } catch (RuntimeException exception) {
+//
+//            //Return cached response
+//            if (exception.getCause() instanceof HttpResponseException) {
+//                HttpResponseException httpResponseException = (HttpResponseException) exception.getCause();
+//                final int statusCode = httpResponseException.getStatusCode();
+//                if (statusCode == HttpStatusCodes.STATUS_CODE_NOT_MODIFIED) {
+//                    return cachedRequestToResponse.get(octaneHttpRequest);
+//                }
+//            }
+//
+//            //Handle session timeout exception
+//            if (retryCount > 0 && exception instanceof OctaneException) {
+//                OctaneException octaneException = (OctaneException) exception;
+//                StringFieldModel errorCodeFieldModel = (StringFieldModel) octaneException.getError().getValue("errorCode");
+//                LongFieldModel httpStatusCode = (LongFieldModel) octaneException.getError().getValue("http_status_code");
+//
+//                //Handle session timeout
+//                if (errorCodeFieldModel != null && httpStatusCode.getValue() == 401 &&
+//                        (ERROR_CODE_TOKEN_EXPIRED.equals(errorCodeFieldModel.getValue()) || ERROR_CODE_GLOBAL_TOKEN_EXPIRED.equals(errorCodeFieldModel.getValue())) &&
+//                        lastUsedAuthentication != null) {
+//
+//                    logger.debug("Auth token expired, trying to re-authenticate");
+//                    try {
+//                        if (lastUsedAuthentication instanceof GrantTokenAuthentication) {
+//                            lwssoValue = ""; //clear it to force re-auth
+//                        }
+//                        authenticate(lastUsedAuthentication);
+//                    } catch (OctaneException ex) {
+//                        logger.debug("Exception while retrying authentication: {}", ex.getMessage());
+//                    }
+//                    logger.debug("Retrying request, retries left: {}", retryCount);
+//                    return execute(octaneHttpRequest, --retryCount);
+//                }
+//            }
+//
+//            throw exception;
+//        }
     }
 
     private HttpResponse executeRequest(final HttpRequest httpRequest) {
@@ -521,66 +556,59 @@ public class IdePluginsOctaneHttpClient implements OctaneHttpClient {
      * @return true if LWSSO cookie is renewed
      */
     private boolean updateLWSSOCookieValue(HttpHeaders headers) {
-        boolean renewed = false;
-        List<String> strHPSSOCookieCsrf1 = headers.getHeaderStringValues(SET_COOKIE);
-        if (strHPSSOCookieCsrf1.isEmpty()) {
-            return false;
-        }
+//        boolean renewed = false;
+//        List<String> strHPSSOCookieCsrf1 = headers.getHeaderStringValues(SET_COOKIE);
+//        if (strHPSSOCookieCsrf1.isEmpty()) {
+//            return false;
+//        }
+//
+//		/* Following code failed to parse set-cookie to get LWSSO cookie due to cookie version, check RFC 2965
+//        String strCookies = strHPSSOCookieCsrf1.toString();
+//        List<HttpCookie> Cookies = java.net.HttpCookie.parse(strCookies.substring(1, strCookies.length()-1));
+//        lwssoValue = Cookies.stream().filter(a -> a.getName().equals(LWSSO_COOKIE_KEY)).findFirst().get().getValue();*/
+//        for (String strCookie : strHPSSOCookieCsrf1) {
+//            List<HttpCookie> cookies;
+//            try {
+//                // Sadly the server seems to send back empty cookies for some reason
+//                cookies = HttpCookie.parse(strCookie);
+//            } catch (Exception ex) {
+//                logger.error("Failed to parse HPSSOCookieCsrf: " + ex.getMessage());
+//                continue;
+//            }
+//            Optional<HttpCookie> lwssoCookie = cookies.stream().filter(a -> a.getName().equals(LWSSO_COOKIE_KEY)).findFirst();
+//            if (lwssoCookie.isPresent()) {
+//                lwssoValue = lwssoCookie.get().getValue();
+//                renewed = true;
+//            } else {
+//                cookies.stream().filter(cookie -> cookie.getName().equals(OCTANE_USER_COOKIE_KEY)).findAny().ifPresent(cookie -> octaneUserValue = cookie.getValue());
+//            }
+//        }
 
-		/* Following code failed to parse set-cookie to get LWSSO cookie due to cookie version, check RFC 2965
-        String strCookies = strHPSSOCookieCsrf1.toString();
-        List<HttpCookie> Cookies = java.net.HttpCookie.parse(strCookies.substring(1, strCookies.length()-1));
-        lwssoValue = Cookies.stream().filter(a -> a.getName().equals(LWSSO_COOKIE_KEY)).findFirst().get().getValue();*/
-        for (String strCookie : strHPSSOCookieCsrf1) {
-            List<HttpCookie> cookies;
-            try {
-                // Sadly the server seems to send back empty cookies for some reason
-                cookies = HttpCookie.parse(strCookie);
-            } catch (Exception ex) {
-                logger.error("Failed to parse HPSSOCookieCsrf: " + ex.getMessage());
-                continue;
-            }
-            Optional<HttpCookie> lwssoCookie = cookies.stream().filter(a -> a.getName().equals(LWSSO_COOKIE_KEY)).findFirst();
-            if (lwssoCookie.isPresent()) {
-                lwssoValue = lwssoCookie.get().getValue();
-                renewed = true;
-            } else {
-                cookies.stream().filter(cookie -> cookie.getName().equals(OCTANE_USER_COOKIE_KEY)).findAny().ifPresent(cookie -> octaneUserValue = cookie.getValue());
-            }
-        }
-
-        return renewed;
+        return true;
     }
 
     private void clearSessionFields() {
         sessionCookieName = DEFAULT_OCTANE_SESSION_COOKIE_NAME;
         lwssoValue = "";
         octaneUserValue = "";
-        HttpTransport HTTP_TRANSPORT = new NetHttpTransport();
-        requestFactory = HTTP_TRANSPORT.createRequestFactory(requestInitializer);
-        try {
-            CookieHandler.getDefault().put(new URI(urlDomain), new HashMap<>());
-        } catch (IOException | URISyntaxException e) {
-            e.printStackTrace();
-        }
     }
 
     @Override
     public void signOut() {
-        GenericUrl genericUrl = new GenericUrl(urlDomain + OAUTH_SIGNOUT_URL);
-        try {
-            HttpRequest httpRequest = requestFactory.buildPostRequest(genericUrl, null);
-            HttpResponse response = executeRequest(httpRequest);
-
-            if (response.isSuccessStatusCode()) {
-                HttpHeaders hdr1 = response.getHeaders();
-                updateLWSSOCookieValue(hdr1);
-                clearSessionFields();
-                lastUsedAuthentication = null;
-            }
-        } catch (Exception e) {
-            throw wrapException(e);
-        }
+//        GenericUrl genericUrl = new GenericUrl(urlDomain + OAUTH_SIGNOUT_URL);
+//        try {
+//            HttpRequest httpRequest = requestFactory.buildPostRequest(genericUrl, null);
+//            HttpResponse response = executeRequest(httpRequest);
+//
+//            if (response.isSuccessStatusCode()) {
+//                HttpHeaders hdr1 = response.getHeaders();
+//                updateLWSSOCookieValue(hdr1);
+//                clearSessionFields();
+//                lastUsedAuthentication = null;
+//            }
+//        } catch (Exception e) {
+//            throw wrapException(e);
+//        }
     }
 
     public static int getHttpRequestRetryCount() {

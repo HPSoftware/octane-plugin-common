@@ -121,7 +121,7 @@ public class ServiceModule extends AbstractModule {
                     ClientType clientType = getClientTypeForServer(currentConnectionSettings);
                     logger.debug("Client type used for connection settings: " + currentConnectionSettings + " is " + clientType);
 	            	
-	                IdePluginsOctaneHttpClient httpClient = new IdePluginsOctaneHttpClient(currentConnectionSettings.getBaseUrl(), clientType);
+	                IdePluginsOctaneHttpClient2 httpClient = new IdePluginsOctaneHttpClient2(currentConnectionSettings.getBaseUrl(), clientType);
 	                httpClient.setSsoTokenPollingStartedHandler(tokenPollingStartedHandler);
 	                httpClient.setSsoTokenPollingInProgressHandler(tokenPollingInProgressHandler);
 	                httpClient.setSsoTokenPollingCompleteHandler(tokenPollingCompleteHandler);
