@@ -29,6 +29,8 @@ import com.hpe.adm.octane.ideplugins.services.util.ClientType;
 import org.apache.http.Consts;
 import org.apache.http.client.CookieStore;
 import org.apache.http.client.HttpClient;
+import org.apache.http.client.config.CookieSpecs;
+import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
@@ -126,9 +128,15 @@ public class IdePluginsOctaneHttpClient2 implements OctaneHttpClient {
         };
          */
 
+
+        RequestConfig globalConfig = RequestConfig.custom()
+                .setCookieSpec(CookieSpecs.STANDARD)
+                .build();
+
         cookieStore = new BasicCookieStore();
         httpClient = HttpClientBuilder
                 .create()
+                .setDefaultRequestConfig(globalConfig)
                 .setDefaultCookieStore(cookieStore)
                 .useSystemProperties()
                 .build();
