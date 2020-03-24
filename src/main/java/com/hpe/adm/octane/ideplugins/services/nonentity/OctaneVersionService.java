@@ -12,18 +12,19 @@
  */
 package com.hpe.adm.octane.ideplugins.services.nonentity;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.google.gson.JsonParser;
 import com.google.inject.Inject;
 import com.hpe.adm.nga.sdk.network.OctaneHttpClient;
 import com.hpe.adm.nga.sdk.network.OctaneHttpRequest;
 import com.hpe.adm.nga.sdk.network.OctaneHttpResponse;
-import com.hpe.adm.nga.sdk.network.google.GoogleHttpClient;
 import com.hpe.adm.octane.ideplugins.services.connection.ConnectionSettings;
 import com.hpe.adm.octane.ideplugins.services.connection.ConnectionSettingsProvider;
+import com.hpe.adm.octane.ideplugins.services.connection.IdePluginsOctaneHttpClient;
 import com.hpe.adm.octane.ideplugins.services.exception.ServiceRuntimeException;
 import com.hpe.adm.octane.ideplugins.services.util.OctaneVersion;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Retrieves the Octane version.
@@ -43,7 +44,7 @@ public class OctaneVersionService {
     private static String getVersionString(ConnectionSettings connectionSettings) {
         try {
             OctaneHttpRequest request = new OctaneHttpRequest.GetOctaneHttpRequest(getServerVersionUrl(connectionSettings));
-            OctaneHttpClient octaneHttpClient = new GoogleHttpClient(connectionSettings.getBaseUrl());
+            OctaneHttpClient octaneHttpClient = new IdePluginsOctaneHttpClient(connectionSettings.getBaseUrl(), null);
             OctaneHttpResponse response = octaneHttpClient.execute(request);
             String jsonString = response.getContent();
             return new JsonParser().parse(jsonString).getAsJsonObject().get("display_version").getAsString();

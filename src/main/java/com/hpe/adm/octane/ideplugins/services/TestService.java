@@ -65,7 +65,7 @@ public class TestService {
      */
     public void testConnection(ConnectionSettings connectionSettings) throws ServiceException {
         // Try basic http connection first
-        testHttpConnection(connectionSettings);
+        // testHttpConnection(connectionSettings);
 
         if (!(connectionSettings.getAuthentication() instanceof GrantTokenAuthentication)) {
             Query query = Query.statement("subtype", QueryMethod.EqualTo, Entity.WORK_ITEM_ROOT.getSubtypeName()).build();

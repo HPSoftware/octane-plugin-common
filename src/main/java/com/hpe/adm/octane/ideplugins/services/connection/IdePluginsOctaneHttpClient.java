@@ -109,6 +109,14 @@ public class IdePluginsOctaneHttpClient implements OctaneHttpClient {
                 request.getHeaders().set(HPE_CLIENT_TYPE, clientType.toString());
             }
             request.setReadTimeout(60000);
+            
+            String proxyUser = System.getProperty("http.proxyUser");
+            String proxyPassword = System.getProperty("http.proxyPassword");
+            boolean isProxyAuthHeaderSet = request.getHeaders().containsKey("Proxy-Authorization");
+            if(proxyUser != null && proxyPassword != null && !isProxyAuthHeaderSet) {
+            	String encodedCredentials = Base64.getEncoder().encodeToString((proxyUser+":"+proxyPassword).getBytes());
+            	request.getHeaders().set("Proxy-Authorization", "Basic " + encodedCredentials);
+            }
         };
 
         logProxySystemProperties();
